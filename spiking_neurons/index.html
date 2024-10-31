@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spiking Neural Networks</title>
+    <style>
+        canvas {
+            border: 1px solid black;
+            background-color: black;
+            /* Add this line to set the background color to black */
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="canvas" width="1600" height="900"></canvas>
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        // Simulation parameters
+        const delay_fire = 20;
+        const decay = 1;
+        const init_weight = 1;
+        const network_size = 10;
+
+        // Shape parameters
+        const coef_linewidth = 2.5;
+        const arrowLength = 10;
+        const arrowWidth = 5;
+        const lagX = 7;
+        const neuron_radius = 10;
+        const selection_radius = 10;
+
+
+        function clamp(value, min, max) {
+            return Math.min(Math.max(value, min), max);
+        }
+
+        class Neuron {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.state = 0;
+                this.decay = decay;
+                this.release = 0;
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, neuron_radius * (this.state * this.state * 0.5 + 1), 0, 2 * Math.PI);
+                const grayscale = Math.round(this.state * 255);
+                ctx.fillStyle = `rgb(${grayscale}, ${grayscale}, ${grayscale})`;
+                ctx.fill();
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+                if (this.state != 0) {
+                    this.state = clamp(this.state * (1 - this.decay), 0, 1);
+                }
+            }
+
+            activateNeuron(weight) {
+                if (this.release != 0)
+                    return;
+                this.state = clamp(this.state + weight, 0, 1);
+                if (this.state >= 1) {
+                    const audio = new Audio('snap.mp3');
+                    audio.play();
+                    this.propagateActivation();
+                    this.draw();
+                    this.state = 0;
+
+                }
+            }
+
+            propagateActivation() {
+                links.forEach(link => {
+                    if (link.start === this) {
+                        link.start.release += 1;
+                        link.propagate = 1;
+                    }
+                });
+            }
+
+        }
+
+        class Link {
+            constructor(start, end, weight = init_weight) {
+                this.start = start;
+                this.end = end;
+                this.weight = weight;
+                this.max_weight = 1;
+                this.min_weight = 0.001;
+                this.propagate = 0;
+            }
+
+            endPos(lagY = 0) {
+                const angle = Math.atan2(this.end.y - this.start.y, this.end.x - this.start.x);
+                const endx = this.end.x - (neuron_radius + lagY) * Math.cos(angle) - lagX * Math.sin(angle);
+                const endy = this.end.y - (neuron_radius + lagY) * Math.sin(angle) + lagX * Math.cos(angle);
+                return { x: endx, y: endy };
+            }
+
+            length() {
+                return Math.hypot(this.end.x - this.start.x, this.end.y - this.start.y);
+            }
+            draw_signal(time) {
+                const end = this.endPos();
+                const length = this.length();
+                // Add a point that moves along the link direction
+                const pointX = this.start.x + (end.x - this.start.x) * time;
+                const pointY = this.start.y + (end.y - this.start.y) * time;
+                const pointRadius = 5;
+                ctx.beginPath();
+                ctx.arc(pointX, pointY, pointRadius, 0, 2 * Math.PI);
+                ctx.fillStyle = 'white';
+                ctx.fill();
+            }
+            draw() {
+                const end = this.endPos();
+                const angle = Math.atan2(this.end.y - this.start.y, this.end.x - this.start.x);
+
+                ctx.beginPath();
+                ctx.moveTo(this.start.x, this.start.y);
+                ctx.lineTo(end.x, end.y);
+                ctx.lineWidth = this.weight * coef_linewidth;
+                ctx.strokeStyle = 'white';
+                ctx.stroke();
+
+                ctx.beginPath();
+                ctx.moveTo(end.x, end.y);
+                ctx.lineTo(
+                    end.x - arrowLength * Math.cos(angle - Math.PI / 6),
+                    end.y - arrowLength * Math.sin(angle - Math.PI / 6)
+                );
+                ctx.lineTo(
+                    end.x - arrowLength * Math.cos(angle + Math.PI / 6),
+                    end.y - arrowLength * Math.sin(angle + Math.PI / 6)
+                );
+                ctx.closePath();
+                ctx.fillStyle = 'white';
+                ctx.fill();
+                if (this.propagate > 0) {
+                    const length = this.length();
+                    this.draw_signal(1 - this.propagate);
+                    // this.propagate = clamp(this.propagate - 1 / (delay_fire * length), 0, 1);
+                    this.propagate = clamp(this.propagate - 1 / (delay_fire), 0, 1);
+                    if (this.propagate == 0) {
+                        this.end.activateNeuron(this.weight);
+                        this.start.release -= 1;
+                    }
+
+                }
+            }
+        }
+
+        const neurons = [];
+        const links = [];
+        let selectedNeuron = null;
+        let creatingConnection = false;
+        let connectionStartNeuron = null;
+        let mouseX = 0;
+        let mouseY = 0;
+
+        canvas.addEventListener('mousedown', handleMouseDown);
+        canvas.addEventListener('mouseup', handleMouseUp);
+        canvas.addEventListener('mousemove', handleMouseMove);
+        canvas.addEventListener('wheel', handleMouseWheel);
+        canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+        canvas.addEventListener('dblclick', handleDoubleClick);
+        window.addEventListener('keydown', (e) => {
+            if (e.ctrlKey) {
+                creatingConnection = true;
+            }
+            if (e.key === "1") {
+                const pos = getMousePos(e);
+                const sub_neurons = getNeuronsAtPos(pos);
+                    // setInterval(() => {
+                        sub_neurons.forEach(sub_neurons => sub_neurons.activateNeuron(1))
+                    // }, 10);
+            }
+
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.ctrlKey) {
+                creatingConnection = false;
+                connectionStartNeuron = null;
+            }
+        });
+        canvas.addEventListener("click", (e) => {
+            if (creatingConnection) {
+                const pos = getMousePos(e);
+                const neuron = getNeuronAtPos(pos);
+                if (neuron) {
+                    if (connectionStartNeuron) {
+                        links.push(new Link(connectionStartNeuron, neuron));
+                        connectionStartNeuron = null;
+                        creatingConnection = false;
+                        draw();
+                    } else {
+                        connectionStartNeuron = neuron;
+                    }
+                }
+            }
+        });
+        function handleMouseDown(e) {
+            const pos = getMousePos(e);
+            const neuron = getNeuronAtPos(pos);
+
+            if (e.button === 0) { // Left click
+                if (neuron) {
+                    selectedNeuron = neuron;
+                }
+            } else if (e.button === 2) { // Right click
+                if (neuron) {
+                    neurons.splice(neurons.indexOf(neuron), 1);
+                    removeLinks(neuron);
+                    deleteNeuron(neuron);
+                } else {
+                    createNeuron(pos);
+                }
+            }
+        }
+        function handleMouseUp(e) {
+            if (selectedNeuron) {
+                selectedNeuron = null;
+            }
+        }
+        function handleMouseMove(e) {
+            const pos = getMousePos(e);
+            mouseX = pos.x;
+            mouseY = pos.y;
+
+            if (selectedNeuron) {
+                selectedNeuron.x = pos.x;
+                selectedNeuron.y = pos.y;
+                draw();
+            }
+        }
+        function handleMouseWheel(e) {
+            const pos = getMousePos(e);
+            const link = getLinkAtPos(pos);
+
+            if (link) {
+                link.weight = Math.min(link.max_weight, Math.max(link.min_weight, link.weight + 0.01 * (e.deltaY > 0 ? -1 : 1)));
+                draw();
+            }
+        }
+        function handleDoubleClick(e) {
+            const pos = getMousePos(e);
+            const sub_neurons = getNeuronsAtPos(pos);
+
+            if (sub_neurons) {
+                sub_neurons.forEach(sub_neurons => sub_neurons.activateNeuron(1));
+            }
+        }
+
+        function getMousePos(e) {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top
+            };
+        }
+        function getNeuronAtPos(pos) {
+            return neurons.find(neuron => {
+                const dx = pos.x - neuron.x;
+                const dy = pos.y - neuron.y;
+                return Math.sqrt(dx * dx + dy * dy) < neuron_radius;
+            });
+        }
+        function getNeuronsAtPos(pos) {
+            return neurons.filter(neuron => {
+                const dx = pos.x - neuron.x;
+                const dy = pos.y - neuron.y;
+                return Math.sqrt(dx * dx + dy * dy) < selection_radius;
+            });
+        }
+        function getLinkAtPos(pos) {
+            return links.find(link => {
+                const end = link.endPos(5);
+                const dist = Math.hypot(end.x - pos.x, end.y - pos.y);
+                return dist < 5; // Threshold distance to detect link
+            });
+        }
+
+        function createNeuron(pos) {
+            neurons.push(new Neuron(pos.x, pos.y));
+            draw();
+        }
+
+        function deleteNeuron(neuron) {
+            const index = neurons.indexOf(neuron);
+            if (index !== -1) {
+                neurons.splice(index, 1);
+            }
+            draw();
+        }
+
+        function createLink(start, end, weight) {
+            links.push(new Link(start, end, weight));
+            draw();
+        }
+
+        function removeLinks(neuron) {
+            for (let i = links.length - 1; i >= 0; i--) {
+                if (links[i].start === neuron || links[i].end === neuron) {
+                    links.splice(i, 1);
+                }
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw links
+            links.forEach(link => link.draw());
+
+            // Draw neurons
+            neurons.forEach(neuron => neuron.draw());
+        }
+
+        function createFeedForwardNetwork(layers) {
+            const spacingX = canvas.width / (layers.length + 1);
+            const spacingY = canvas.height / (Math.max(...layers) + 1);
+
+            layers.forEach((numNeurons, i) => {
+                for (let j = 0; j < numNeurons; j++) {
+                    const x = spacingX * (i + 1);
+                    const y = spacingY * (j + 1);
+                    createNeuron({ x, y });
+                }
+            });
+
+            neurons.forEach((neuron, i) => {
+                if (i < neurons.length - layers[layers.length - 1]) {
+                    for (let j = i + 1; j < neurons.length; j++) {
+                        createLink(neuron, neurons[j]);
+                    }
+                }
+            });
+        }
+
+        function createFullyConnectedGraph(size) {
+            const angleStep = (2 * Math.PI) / size;
+            const radius = Math.min(canvas.width, canvas.height) / 3;
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+
+            for (let i = 0; i < size; i++) {
+                const angle = i * angleStep;
+                const x = centerX + radius * Math.cos(angle);
+                const y = centerY + radius * Math.sin(angle);
+                createNeuron({ x, y });
+            }
+
+            neurons.forEach(neuron1 => {
+                neurons.forEach(neuron2 => {
+                    if (neuron1 !== neuron2) {
+                        createLink(neuron1, neuron2);
+                    }
+                });
+            });
+        }
+
+        function createRandomConnectedGraph(size) {
+            // Create neurons in a circle
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            const radius = Math.min(canvas.width, canvas.height) / 2.1;
+            const angleStep = (2 * Math.PI) / size;
+
+            for (let i = 0; i < size; i++) {
+                const angle = i * angleStep;
+                const x = centerX + radius * Math.cos(angle);
+                const y = centerY + radius * Math.sin(angle);
+                createNeuron({ x, y });
+            }
+            // const spacingX = canvas.width / size;
+            // const y = canvas.height / 2;
+
+            // for (let i = 0; i < size; i++) {
+            //     const x = spacingX * (i + 1);
+            //     createNeuron({ x, y });
+            // }
+
+
+            // Connect each neuron to a random subset of other neurons
+            neurons.forEach(neuron1 => {
+                const numConnections = Math.floor(Math.random() * (neurons.length - 1));
+                const otherNeurons = neurons.filter(neuron => neuron !== neuron1);
+                for (let i = 0; i < numConnections; i++) {
+                    const randomIndex = Math.floor(Math.random() * otherNeurons.length);
+                    const neuron2 = otherNeurons[randomIndex];
+                    createLink(neuron1, neuron2, Math.random() * 1.1);
+                    otherNeurons.splice(randomIndex, 1);
+                }
+            });
+        }
+
+        function createTreeGraph(depth, branchingFactor, factor) {
+            const startX = canvas.width / 2;
+            const startY = 50;
+            const verticalSpacing = 50;
+            const horizontalSpacing = 10;
+
+            function createTreeLevel(parent, level) {
+                if (level > depth) return;
+                randomBranchingFactor = Math.floor(Math.random()*branchingFactor);
+
+                for (let i = 0; i < randomBranchingFactor; i++) {
+                    const x = parent.x + (i - (randomBranchingFactor - 1) / 2) * horizontalSpacing * (depth - level + 1);
+                    const y = parent.y + verticalSpacing;
+                    const child = new Neuron(x, y);
+                    neurons.push(child);
+                    createLink(child, parent, Math.random());
+                    if (Math.random() > 1 - factor)
+                        createTreeLevel(child, level + 1);
+                }
+            }
+
+            const root = new Neuron(startX, startY);
+            neurons.push(root);
+            createTreeLevel(root, 1);
+            draw();
+        }
+        // Create example networks
+        // createFeedForwardNetwork([2, 5, 1]);
+        // createFullyConnectedGraph(5);
+
+        // createTreeGraph(8, 10, 1);
+        createRandomConnectedGraph(network_size);
+        setInterval(draw, 10); // Call draw() every 1 second (1000 milliseconds)
+    </script>
+</body>
+
+</html>
